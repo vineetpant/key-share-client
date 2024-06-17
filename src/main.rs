@@ -1,11 +1,11 @@
 use base64::{engine::general_purpose, Engine};
 use clap::{Parser, Subcommand};
 use key_share_service::{
-    DecryptionRequest, DecryptionResponse, EncryptionRequest, EncryptionResponse, PublicKeyResponse,
+    DecryptionRequest, DecryptionResponse, PublicKeyResponse,
 };
 use reqwest::Client;
 use std::collections::HashMap;
-use threshold_crypto::{Ciphertext, PublicKeySet};
+use threshold_crypto::{Ciphertext, PublicKey, PublicKeySet};
 
 #[derive(Parser)]
 #[command(name = "threshold_client")]
@@ -53,15 +53,24 @@ async fn encrypt_message(
     base_url: &str,
     plaintext: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let encrypt_resp: EncryptionResponse = client
-        .post(format!("{}/encrypt", base_url))
-        .json(&EncryptionRequest { plaintext })
+    // Fetch public key
+    let pub_key_resp: PublicKeyResponse = client
+        .get(format!("{}/public_key", base_url))
         .send()
         .await?
         .json()
         .await?;
 
-    println!("Ciphertext: {}", encrypt_resp.ciphertext);
+    let pub_key_set: PublicKeySet = serde_json::from_str(&pub_key_resp.pub_key_set)?;
+
+    let pub_key: PublicKey = pub_key_set.public_key();
+
+    // Encrypt with public key
+    let ciphertext: Ciphertext = pub_key.encrypt(plaintext.as_bytes());
+    let ciphertext_str = serde_json::to_string(&ciphertext)?;
+    let ciphertext_base64 = general_purpose::STANDARD.encode(ciphertext_str.as_bytes());
+
+    println!("Ciphertext: {}", ciphertext_base64);
     Ok(())
 }
 
@@ -80,7 +89,7 @@ async fn decrypt_message(
         .json()
         .await?;
 
-    // Combine the decryption shares to retrieve the plaintext
+    // Fetch public key
     let pub_key_resp: PublicKeyResponse = client
         .get(format!("{}/public_key", base_url))
         .send()
@@ -94,6 +103,7 @@ async fn decrypt_message(
 
     let ciphertext: Ciphertext = serde_json::from_str(&ciphertext_str)?;
 
+    // Combine the decryption shares to retrieve the plaintext
     let mut shares = HashMap::new();
     for (i, share) in decrypt_resp.decryption_shares {
         shares.insert(i, share);
